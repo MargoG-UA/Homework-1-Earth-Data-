@@ -17,7 +17,7 @@ st.title("Аналіз ділянок Києва: Забруднення пов�
 @st.cache_data
 def load_alarms_data():
     resource_id = "e1216fe6-7cbd-41ad-b478-85983a2e2669"
-    url = f"https://data.kyivcity.gov.ua/api/action/datastore_search?resource_id={resource_id}&limit=10000"
+    url = f"https://data.kyivcity.gov.ua/api/action/datastore_search?resource_id={resource_id}&limit=10"
     
     try:
         response = requests.get(url)
@@ -27,9 +27,16 @@ def load_alarms_data():
         if not records:
             return pd.DataFrame()
             
-        df = pd.DataFrame(records)
+        df_meta = pd.DataFrame(records)
         
-        # Розумний пошук колонок (навіть якщо API їх раптом перейменує)
+        # Якщо API повернуло посилання на файл (resource_url), читаємо його
+        if 'resource_url' in df_meta.columns:
+            actual_file_url = df_meta['resource_url'].iloc[0]
+            df = pd.read_csv(actual_file_url)
+        else:
+            df = df_meta
+        
+        # Шукаємо колонки з датами у завантаженому файлі
         start_col = next((col for col in df.columns if any(x in col.lower() for x in ['start', 'begin', 'from', 'початок'])), None)
         end_col = next((col for col in df.columns if any(x in col.lower() for x in ['end', 'finish', 'to', 'кінець'])), None)
         
@@ -43,7 +50,7 @@ def load_alarms_data():
             df['duration'] = (df[end_col] - df[start_col]).dt.total_seconds() / 60
             df['date'] = df[start_col].dt.date
         else:
-            st.error(f"Не вдалося розпізнати колонки дат. Доступні колонки: {list(df.columns)}")
+            st.error(f"Файл завантажено, але не вдалося розпізнати колонки дат. Колонки у файлі: {list(df.columns)}")
             df['date'] = pd.NaT
             df['duration'] = 0
             
@@ -171,7 +178,7 @@ with st.spinner("Завантаження даних NASA для базовог�
         base_avg = base_pollution['avg_no2_level'].mean()
         st.metric("Середній рівень забруднення", f"{base_avg:.6f} mol/m²")
     else:
-        st.info("Немає супутникових знімків для базового періоду у вашому файлі 'EARTH data.md'.")
+        st.info("Немає супутникових знімків для базового періоду (лютий 2022) у вашому файлі 'EARTH data.md'. Додайте посилання за ці дати, щоб побачити результат.")
 
 selected_week = st.date_input("Виберіть початок тижня для порівняння (під час вторгнення):", value=datetime(2024, 9, 1))
 if selected_week:
@@ -184,6 +191,9 @@ if selected_week:
             comp_avg = comp_pollution['avg_no2_level'].mean()
             delta = comp_avg - base_avg
             st.metric("Середній рівень забруднення (Вибраний тиждень)", f"{comp_avg:.6f} mol/m²", delta=f"{delta:.6f} mol/m²", delta_color="inverse")
+        elif not comp_pollution.empty and base_avg is None:
+            comp_avg = comp_pollution['avg_no2_level'].mean()
+            st.metric("Середній рівень забруднення (Вибраний тиждень)", f"{comp_avg:.6f} mol/m²")
         elif comp_pollution.empty:
             st.info("Немає супутникових даних у файлі 'EARTH data.md' для вибраного тижня.")
 
@@ -206,7 +216,7 @@ if not top_duration.empty:
             comparison_data.append({
                 "Дата": day,
                 "Тривалість тривог (хв)": round(alarms_info['total_duration_min'], 1),
-                "Середній рівень NO2": round(avg_pol, 6) if avg_pol else "Немає даних"
+                "Середній рівень NO2": round(avg_pol, 6) if avg_pol else "Немає даних у EARTH data.md"
             })
             
     st.table(pd.DataFrame(comparison_data))
