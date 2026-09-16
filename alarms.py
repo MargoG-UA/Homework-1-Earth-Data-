@@ -1,10 +1,10 @@
 import streamlit as st
 import pandas as pd
-import requests
 import xarray as xr
 import earthaccess
 import re
 import os
+import json
 from datetime import datetime
 
 # Налаштування сторінки
@@ -12,41 +12,34 @@ st.set_page_config(page_title="Аналіз якості повітря та т�
 st.title("Аналіз ділянок Києва: Забруднення повітря та Повітряні тривоги")
 
 # ==========================================
-# 1. ЗАВАНТАЖЕННЯ ДАНИХ ПРО ТРИВОГИ
+# 1. ЧИТАННЯ ДАНИХ ПРО ТРИВОГИ З JSON ФАЙЛУ
 # ==========================================
 @st.cache_data
 def load_alarms_data():
-    resource_id = "e1216fe6-7cbd-41ad-b478-85983a2e2669"
-    url = f"https://data.kyivcity.gov.ua/api/action/datastore_search?resource_id={resource_id}&limit=10"
-    
-    # Маскування під браузер
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
-    
     try:
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
-        records = response.json().get("result", {}).get("records", [])
-        
-        if not records:
-            return pd.DataFrame()
+        # Читаємо локальний файл, який ви закинули на GitHub
+        with open("airAlert.json", "r", encoding="utf-8") as f:
+            data = json.load(f)
             
-        df_meta = pd.DataFrame(records)
-        
-        # Читання безпосереднього файлу, якщо є посилання
-        if 'resource_url' in df_meta.columns:
-            actual_file_url = df_meta['resource_url'].iloc[0]
-            response_csv = requests.get(actual_file_url, headers=headers)
-            response_csv.raise_for_status()
-            from io import StringIO
-            df = pd.read_csv(StringIO(response_csv.text))
+        # Універсальна обробка: шукаємо список із записами
+        if isinstance(data, dict):
+            for key, val in data.items():
+                if isinstance(val, list):
+                    records = val
+                    break
+            else:
+                records = [data]
         else:
-            df = df_meta
+            records = data
+            
+        df = pd.DataFrame(records)
         
-        # Пошук колонок дат
-        start_col = next((col for col in df.columns if any(x in col.lower() for x in ['start', 'begin', 'from', 'початок'])), None)
-        end_col = next((col for col in df.columns if any(x in col.lower() for x in ['end', 'finish', 'to', 'кінець'])), None)
+        if df.empty:
+            return df
+
+        # Розумний пошук колонок початку та кінця тривоги
+        start_col = next((col for col in df.columns if any(x in col.lower() for x in ['start', 'begin', 'from', 'початок', 'created'])), None)
+        end_col = next((col for col in df.columns if any(x in col.lower() for x in ['end', 'finish', 'to', 'кінець', 'finished', 'resolved'])), None)
         
         if start_col and end_col:
             df[start_col] = pd.to_datetime(df[start_col], errors='coerce')
@@ -55,13 +48,16 @@ def load_alarms_data():
             df['duration'] = (df[end_col] - df[start_col]).dt.total_seconds() / 60
             df['date'] = df[start_col].dt.date
         else:
-            st.error(f"Не вдалося розпізнати колонки дат. Колонки у файлі: {list(df.columns)}")
+            st.warning(f"Дані завантажено, але не вдалося розпізнати колонки дат для аналізу. Доступні: {list(df.columns)}")
             df['date'] = pd.NaT
             df['duration'] = 0
             
         return df
+    except FileNotFoundError:
+        st.error("Файл 'airAlert.json' не знайдено! Переконайтеся, що ви завантажили його на GitHub.")
+        return pd.DataFrame()
     except Exception as e:
-        st.error(f"Помилка завантаження даних про тривоги: {e}")
+        st.error(f"Помилка обробки файлу тривог: {e}")
         return pd.DataFrame()
 
 # ==========================================
@@ -72,7 +68,6 @@ def setup_nasa_auth():
     if "EARTHDATA_USERNAME" in st.secrets:
         os.environ["EARTHDATA_USERNAME"] = st.secrets["EARTHDATA_USERNAME"]
         os.environ["EARTHDATA_PASSWORD"] = st.secrets["EARTHDATA_PASSWORD"]
-    
     try:
         earthaccess.login(strategy="environment")
         return True
@@ -84,7 +79,6 @@ def get_urls_for_period(start_date, end_date):
     try:
         with open("EARTH data.md", "r") as file:
             content = file.read()
-            
         urls = re.findall(r'(https?://[^\s]+\.nc)', content)
         filtered_urls = []
         for url in urls:
@@ -93,7 +87,6 @@ def get_urls_for_period(start_date, end_date):
                 file_date = pd.to_datetime(match.group(1)).date()
                 if isinstance(start_date, pd.Timestamp): start_date = start_date.date()
                 if isinstance(end_date, pd.Timestamp): end_date = end_date.date()
-                
                 if start_date <= file_date <= end_date:
                     filtered_urls.append(url)
         return filtered_urls
@@ -104,16 +97,12 @@ def get_urls_for_period(start_date, end_date):
 @st.cache_data
 def process_earth_data_streaming(start_date, end_date):
     urls = get_urls_for_period(start_date, end_date)
-    if not urls:
-        return pd.DataFrame()
-        
-    if not setup_nasa_auth():
+    if not urls or not setup_nasa_auth():
         return pd.DataFrame()
 
     try:
         file_objects = earthaccess.open(urls)
-    except Exception as e:
-        st.error(f"Помилка доступу до NASA: {e}")
+    except Exception:
         return pd.DataFrame()
 
     daily_no2 = []
@@ -123,10 +112,8 @@ def process_earth_data_streaming(start_date, end_date):
     for idx, f_obj in enumerate(file_objects):
         try:
             with xr.open_dataset(f_obj, group='PRODUCT', engine='h5netcdf') as ds:
-                mask = (
-                    (ds.latitude >= lat_min) & (ds.latitude <= lat_max) &
-                    (ds.longitude >= lon_min) & (ds.longitude <= lon_max)
-                )
+                mask = ((ds.latitude >= lat_min) & (ds.latitude <= lat_max) & 
+                        (ds.longitude >= lon_min) & (ds.longitude <= lon_max))
                 no2_kyiv = ds.nitrogendioxide_tropospheric_column.where(mask, drop=True)
                 
                 if no2_kyiv.size > 0:
@@ -147,6 +134,16 @@ st.header("1. Аналіз тривог у Києві")
 alarms_df = load_alarms_data()
 top_duration = pd.DataFrame()
 
+# Кнопка для конвертації JSON у CSV
+if not alarms_df.empty:
+    csv = alarms_df.to_csv(index=False).encode('utf-8')
+    st.download_button(
+        label="📥 Завантажити повну історію тривог як CSV",
+        data=csv,
+        file_name='air_alerts_history.csv',
+        mime='text/csv',
+    )
+
 if not alarms_df.empty and 'date' in alarms_df.columns and not alarms_df['date'].isna().all():
     daily_alarms = alarms_df.groupby('date').agg(
         total_duration_min=pd.NamedAgg(column='duration', aggfunc='sum'),
@@ -160,11 +157,15 @@ if not alarms_df.empty and 'date' in alarms_df.columns and not alarms_df['date']
         st.dataframe(top_count[['date', 'alarms_count']])
 
     with col2:
-        st.subheader("Дні з найдовшими тривогами")
+        st.subheader("Дні з найдовшими тривогами (сумарно)")
         top_duration = daily_alarms.sort_values(by='total_duration_min', ascending=False).head(5)
-        st.dataframe(top_duration[['date', 'total_duration_min']])
+        
+        # Відображаємо тривалість акуратніше (округлюємо)
+        top_duration_display = top_duration.copy()
+        top_duration_display['total_duration_min'] = top_duration_display['total_duration_min'].round(1)
+        st.dataframe(top_duration_display[['date', 'total_duration_min']])
 else:
-    st.warning("Дані про тривоги наразі недоступні або мають невідому структуру.")
+    st.warning("Очікування файлу `airAlert.json`. Завантажте його у свій GitHub.")
 
 st.header("2. Співставлення забруднення повітря")
 period_start = pd.to_datetime("2022-02-17 00:00").date()
@@ -173,30 +174,27 @@ period_end = pd.to_datetime("2022-02-24 03:00").date()
 st.write(f"**Базовий період (Перед вторгненням):** {period_start} - {period_end}")
 base_avg = None
 
-with st.spinner("Завантаження даних NASA для базового періоду..."):
+with st.spinner("Завантаження даних NASA..."):
     base_pollution = process_earth_data_streaming(period_start, period_end)
     if not base_pollution.empty:
         base_avg = base_pollution['avg_no2_level'].mean()
         st.metric("Середній рівень забруднення", f"{base_avg:.6f} mol/m²")
     else:
-        st.info("Немає супутникових знімків для базового періоду у вашому файлі 'EARTH data.md'.")
+        st.info("Немає супутникових знімків для базового періоду (лютий 2022) у файлі 'EARTH data.md'.")
 
 selected_week = st.date_input("Виберіть початок тижня для порівняння (під час вторгнення):", value=datetime(2024, 9, 1))
 if selected_week:
     comp_end = selected_week + pd.Timedelta(days=7)
     st.write(f"**Період порівняння:** {selected_week} - {comp_end}")
     
-    with st.spinner("Отримання даних NASA для вибраного тижня..."):
+    with st.spinner("Отримання даних NASA..."):
         comp_pollution = process_earth_data_streaming(selected_week, comp_end)
         if not comp_pollution.empty and base_avg is not None:
             comp_avg = comp_pollution['avg_no2_level'].mean()
             delta = comp_avg - base_avg
-            st.metric("Середній рівень забруднення (Вибраний тиждень)", f"{comp_avg:.6f} mol/m²", delta=f"{delta:.6f} mol/m²", delta_color="inverse")
-        elif not comp_pollution.empty and base_avg is None:
-            comp_avg = comp_pollution['avg_no2_level'].mean()
-            st.metric("Середній рівень забруднення (Вибраний тиждень)", f"{comp_avg:.6f} mol/m²")
-        elif comp_pollution.empty:
-            st.info("Немає супутникових даних у файлі 'EARTH data.md' для вибраного тижня.")
+            st.metric("Рівень забруднення (Вибраний тиждень)", f"{comp_avg:.6f} mol/m²", delta=f"{delta:.6f} mol/m²", delta_color="inverse")
+        elif not comp_pollution.empty:
+            st.metric("Рівень забруднення (Вибраний тиждень)", f"{comp_pollution['avg_no2_level'].mean():.6f} mol/m²")
 
 # ==========================================
 # 4. СПІВСТАВЛЕННЯ ТРИВОГ І ПОВІТРЯ
