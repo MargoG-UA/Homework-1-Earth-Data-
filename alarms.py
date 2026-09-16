@@ -17,9 +17,9 @@ st.title("Аналіз ділянок Києва: Забруднення пов�
 @st.cache_data
 def load_alarms_data():
     resource_id = "e1216fe6-7cbd-41ad-b478-85983a2e2669"
-    url = f"https://data.kyivcity.gov.ua/api/action/datastore_search?resource_id={resource_id}&limit=10000"
+    url = f"https://data.kyivcity.gov.ua/api/action/datastore_search?resource_id={resource_id}&limit=10"
     
-    # Маскування під звичайний браузер для обходу помилки 403 Forbidden
+    # Маскування під браузер
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
@@ -34,7 +34,7 @@ def load_alarms_data():
             
         df_meta = pd.DataFrame(records)
         
-        # Якщо API повернуло посилання на файл (resource_url), читаємо його
+        # Читання безпосереднього файлу, якщо є посилання
         if 'resource_url' in df_meta.columns:
             actual_file_url = df_meta['resource_url'].iloc[0]
             response_csv = requests.get(actual_file_url, headers=headers)
@@ -44,7 +44,7 @@ def load_alarms_data():
         else:
             df = df_meta
         
-        # Шукаємо колонки з датами у завантаженому файлі
+        # Пошук колонок дат
         start_col = next((col for col in df.columns if any(x in col.lower() for x in ['start', 'begin', 'from', 'початок'])), None)
         end_col = next((col for col in df.columns if any(x in col.lower() for x in ['end', 'finish', 'to', 'кінець'])), None)
         
@@ -55,7 +55,7 @@ def load_alarms_data():
             df['duration'] = (df[end_col] - df[start_col]).dt.total_seconds() / 60
             df['date'] = df[start_col].dt.date
         else:
-            st.error(f"Файл завантажено, але не вдалося розпізнати колонки дат. Колонки: {list(df.columns)}")
+            st.error(f"Не вдалося розпізнати колонки дат. Колонки у файлі: {list(df.columns)}")
             df['date'] = pd.NaT
             df['duration'] = 0
             
@@ -77,21 +77,146 @@ def setup_nasa_auth():
         earthaccess.login(strategy="environment")
         return True
     except Exception:
-        st.warning("⚠️ Налаштуйте авторизацію Earthdata у Streamlit### Diagnosing the Error in image_f32d9a.png
+        st.warning("⚠️ Налаштуйте авторизацію Earthdata у Streamlit Secrets.")
+        return False
 
-Based on the traceback provided in **image_f32d9a.png**, your Streamlit application is crashing due to a `NameError` on line 4 of your `alarms.py` file. 
+def get_urls_for_period(start_date, end_date):
+    try:
+        with open("EARTH data.md", "r") as file:
+            content = file.read()
+            
+        urls = re.findall(r'(https?://[^\s]+\.nc)', content)
+        filtered_urls = []
+        for url in urls:
+            match = re.search(r'NO2____(\d{8})', url)
+            if match:
+                file_date = pd.to_datetime(match.group(1)).date()
+                if isinstance(start_date, pd.Timestamp): start_date = start_date.date()
+                if isinstance(end_date, pd.Timestamp): end_date = end_date.date()
+                
+                if start_date <= file_date <= end_date:
+                    filtered_urls.append(url)
+        return filtered_urls
+    except FileNotFoundError:
+        st.error("Файл 'EARTH data.md' не знайдено у репозиторії!")
+        return []
 
----
+@st.cache_data
+def process_earth_data_streaming(start_date, end_date):
+    urls = get_urls_for_period(start_date, end_date)
+    if not urls:
+        return pd.DataFrame()
+        
+    if not setup_nasa_auth():
+        return pd.DataFrame()
 
-### What is happening?
+    try:
+        file_objects = earthaccess.open(urls)
+    except Exception as e:
+        st.error(f"Помилка доступу до NASA: {e}")
+        return pd.DataFrame()
 
-The Python interpreter is flagging the line `@st.cache_data` because it does not recognize the module name **`st`**. A `NameError` occurs when you try to use a variable, function, or module that hasn't been defined or imported into your current namespace.
+    daily_no2 = []
+    lat_min, lat_max = 50.2, 50.6
+    lon_min, lon_max = 30.2, 30.8
 
-### How to fix it
+    for idx, f_obj in enumerate(file_objects):
+        try:
+            with xr.open_dataset(f_obj, group='PRODUCT', engine='h5netcdf') as ds:
+                mask = (
+                    (ds.latitude >= lat_min) & (ds.latitude <= lat_max) &
+                    (ds.longitude >= lon_min) & (ds.longitude <= lon_max)
+                )
+                no2_kyiv = ds.nitrogendioxide_tropospheric_column.where(mask, drop=True)
+                
+                if no2_kyiv.size > 0:
+                    avg_no2 = float(no2_kyiv.mean().values)
+                    date_val = pd.to_datetime(ds.time.values[0]).date()
+                    daily_no2.append({"date": date_val, "avg_no2_level": avg_no2})
+        except Exception:
+            continue
 
-This almost always happens when you forget to import the Streamlit library at the beginning of your script. To fix this, you need to import Streamlit and alias it as `st` before attempting to use any of its decorators or functions.
+    if daily_no2:
+        return pd.DataFrame(daily_no2).groupby('date').mean().reset_index()
+    return pd.DataFrame()
 
-Add the following line to the very top of your `alarms.py` file:
+# ==========================================
+# 3. ВІЗУАЛІЗАЦІЯ ІНТЕРФЕЙСУ
+# ==========================================
+st.header("1. Аналіз тривог у Києві")
+alarms_df = load_alarms_data()
+top_duration = pd.DataFrame()
 
-```python
-import streamlit as st
+if not alarms_df.empty and 'date' in alarms_df.columns and not alarms_df['date'].isna().all():
+    daily_alarms = alarms_df.groupby('date').agg(
+        total_duration_min=pd.NamedAgg(column='duration', aggfunc='sum'),
+        alarms_count=pd.NamedAgg(column='duration', aggfunc='count')
+    ).reset_index()
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("Дні з найбільшою кількістю тривог")
+        top_count = daily_alarms.sort_values(by='alarms_count', ascending=False).head(5)
+        st.dataframe(top_count[['date', 'alarms_count']])
+
+    with col2:
+        st.subheader("Дні з найдовшими тривогами")
+        top_duration = daily_alarms.sort_values(by='total_duration_min', ascending=False).head(5)
+        st.dataframe(top_duration[['date', 'total_duration_min']])
+else:
+    st.warning("Дані про тривоги наразі недоступні або мають невідому структуру.")
+
+st.header("2. Співставлення забруднення повітря")
+period_start = pd.to_datetime("2022-02-17 00:00").date()
+period_end = pd.to_datetime("2022-02-24 03:00").date()
+
+st.write(f"**Базовий період (Перед вторгненням):** {period_start} - {period_end}")
+base_avg = None
+
+with st.spinner("Завантаження даних NASA для базового періоду..."):
+    base_pollution = process_earth_data_streaming(period_start, period_end)
+    if not base_pollution.empty:
+        base_avg = base_pollution['avg_no2_level'].mean()
+        st.metric("Середній рівень забруднення", f"{base_avg:.6f} mol/m²")
+    else:
+        st.info("Немає супутникових знімків для базового періоду у вашому файлі 'EARTH data.md'.")
+
+selected_week = st.date_input("Виберіть початок тижня для порівняння (під час вторгнення):", value=datetime(2024, 9, 1))
+if selected_week:
+    comp_end = selected_week + pd.Timedelta(days=7)
+    st.write(f"**Період порівняння:** {selected_week} - {comp_end}")
+    
+    with st.spinner("Отримання даних NASA для вибраного тижня..."):
+        comp_pollution = process_earth_data_streaming(selected_week, comp_end)
+        if not comp_pollution.empty and base_avg is not None:
+            comp_avg = comp_pollution['avg_no2_level'].mean()
+            delta = comp_avg - base_avg
+            st.metric("Середній рівень забруднення (Вибраний тиждень)", f"{comp_avg:.6f} mol/m²", delta=f"{delta:.6f} mol/m²", delta_color="inverse")
+        elif not comp_pollution.empty and base_avg is None:
+            comp_avg = comp_pollution['avg_no2_level'].mean()
+            st.metric("Середній рівень забруднення (Вибраний тиждень)", f"{comp_avg:.6f} mol/m²")
+        elif comp_pollution.empty:
+            st.info("Немає супутникових даних у файлі 'EARTH data.md' для вибраного тижня.")
+
+# ==========================================
+# 4. СПІВСТАВЛЕННЯ ТРИВОГ І ПОВІТРЯ
+# ==========================================
+if not top_duration.empty:
+    st.header("3. Співставлення забруднення у дні найдовших тривог")
+    
+    comparison_data = []
+    top_days = top_duration['date'].tolist()
+    
+    with st.spinner("Підтягуємо дані NASA для днів із тривогами..."):
+        for day in top_days:
+            day_pol = process_earth_data_streaming(day, day)
+            avg_pol = day_pol['avg_no2_level'].mean() if not day_pol.empty else None
+            
+            alarms_info = top_duration[top_duration['date'] == day].iloc[0]
+            comparison_data.append({
+                "Дата": day,
+                "Тривалість тривог (хв)": round(alarms_info['total_duration_min'], 1),
+                "Середній рівень NO2": round(avg_pol, 6) if avg_pol else "Немає даних у EARTH data.md"
+            })
+            
+    st.table(pd.DataFrame(comparison_data))
