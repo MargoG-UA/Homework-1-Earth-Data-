@@ -1,152 +1,102 @@
 import streamlit as st
 import pandas as pd
+import json
 import plotly.express as px
 
-st.set_page_config(page_title="Аналітика", layout="wide")
+# Конфігурація сторінки
+st.set_page_config(page_title="Дашборд: Тривоги та Забруднення", layout="wide")
+st.title("Аналітика Повітряних Тривог та Якості Повітря")
 
-# ==========================================
-# ⚙️ БЛОК НАЛАШТУВАНЬ (ЗМІНИТИ НАЗВИ ТУТ)
-# ==========================================
-# Назви колонок у файлі airAlert.json
-COL_ALERT_START = 'started_at'  
-COL_ALERT_END = 'finished_at'
-
-# Назви колонок у файлі saveecobot_city_2_hourly.csv
-COL_ECO_DATE = 'timestamp'
-COL_ECO_VALUE = 'value'
-# ==========================================
-
-st.title("🛡️ Аналітика: Повітряні тривоги та якість повітря")
-
-# --- ФУНКЦІЯ ЗАВАНТАЖЕННЯ ---
+# 1. Завантаження та обробка даних
 @st.cache_data
-def load_and_prep_data():
-    alerts = pd.read_json('airAlert.json')
-    eco = pd.read_csv('saveecobot_city_2_hourly.csv')
-    return alerts, eco
-
-# --- СПРОБА ЗАВАНТАЖЕННЯ ТА ПАРСИНГУ ---
-try:
-    alerts_raw, eco_raw = load_and_prep_data()
-except Exception as e:
-    st.error(f"Не вдалося прочитати файли. Перевір, чи вони лежать у тій самій папці. Помилка: {e}")
-    st.stop()
-
-# Перевірка наявності колонок
-missing_alert_cols = [col for col in [COL_ALERT_START, COL_ALERT_END] if col not in alerts_raw.columns]
-missing_eco_cols = [col for col in [COL_ECO_DATE, COL_ECO_VALUE] if col not in eco_raw.columns]
-
-if missing_alert_cols or missing_eco_cols:
-    st.error("Помилка: Неправильні назви колонок у блоці налаштувань.")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.warning("Реальні колонки в airAlert.json:")
-        st.write(alerts_raw.columns.tolist())
-        st.dataframe(alerts_raw.head(2))
-    with col2:
-        st.warning("Реальні колонки в saveecobot.csv:")
-        st.write(eco_raw.columns.tolist())
-        st.dataframe(eco_raw.head(2))
-    st.stop()
-
-# Якщо все ок - парсимо дати
-try:
-    alerts = alerts_raw.copy()
-    eco = eco_raw.copy()
+def load_data():
+    # Дані тривог
+    with open('airAlert.json', 'r', encoding='utf-8') as f:
+        alerts = json.load(f)
+    df_alerts = pd.DataFrame(alerts)
+    df_alerts['dateTimeStart'] = pd.to_datetime(df_alerts['dateTimeStart'])
+    df_alerts['dateTimeEnd'] = pd.to_datetime(df_alerts['dateTimeEnd'])
+    df_alerts = df_alerts.dropna(subset=['dateTimeStart', 'dateTimeEnd'])
+    df_alerts['duration_minutes'] = (df_alerts['dateTimeEnd'] - df_alerts['dateTimeStart']).dt.total_seconds() / 60
+    df_alerts['year'] = df_alerts['dateTimeStart'].dt.year
+    df_alerts['date'] = df_alerts['dateTimeStart'].dt.date
     
-    alerts['start'] = pd.to_datetime(alerts[COL_ALERT_START], errors='coerce')
-    alerts['end'] = pd.to_datetime(alerts[COL_ALERT_END], errors='coerce')
-    alerts = alerts.dropna(subset=['start', 'end']) # Викидаємо биті рядки
-    alerts['duration_minutes'] = (alerts['end'] - alerts['start']).dt.total_seconds() / 60
-    alerts['date'] = alerts['start'].dt.date
-    alerts['year'] = alerts['start'].dt.year
+    # Дані забруднень
+    df_eco = pd.read_csv('saveecobot_city_2_hourly.csv', low_memory=False)
+    df_eco['logged_at'] = pd.to_datetime(df_eco['logged_at'])
+    df_eco['date'] = df_eco['logged_at'].dt.date
+    df_aqi = df_eco[df_eco['phenomenon'] == 'aqi']
+    daily_aqi = df_aqi.groupby('date')['value'].mean().reset_index()
+    
+    return df_alerts, daily_aqi
 
-    eco['date_time'] = pd.to_datetime(eco[COL_ECO_DATE], errors='coerce')
-    eco = eco.dropna(subset=['date_time', COL_ECO_VALUE])
-    eco['date'] = eco['date_time'].dt.date
-except Exception as e:
-    st.error(f"Помилка при перетворенні дат. Можливо, нестандартний формат. Деталі: {e}")
-    st.stop()
+df_alerts, daily_aqi = load_data()
 
-# --- ОБРОБКА ТА ВІЗУАЛІЗАЦІЯ ---
-st.markdown("---")
+# 2. Аналітика Тривог
+st.header("1. Середня тривалість тривог за роками (з 2022)")
+avg_duration_yr = df_alerts[df_alerts['year'] >= 2022].groupby('year')['duration_minutes'].mean().round(1).reset_index()
+fig_years = px.bar(avg_duration_yr, x='year', y='duration_minutes', text='duration_minutes',
+                   labels={'year': 'Рік', 'duration_minutes': 'Середня тривалість (хв)'}, 
+                   color_discrete_sequence=['#3498db'])
+st.plotly_chart(fig_years, use_container_width=True)
 
-# 1. Середня тривалість по роках (з 2022)
-st.subheader("📊 Середня тривалість тривоги по роках (з 2022)")
-alerts_from_2022 = alerts[alerts['year'] >= 2022]
-if not alerts_from_2022.empty:
-    avg_duration = alerts_from_2022.groupby('year')['duration_minutes'].mean().reset_index()
-    cols = st.columns(len(avg_duration))
-    for i, row in avg_duration.iterrows():
-        cols[i].metric(label=f"Рік {int(row['year'])}", value=f"{row['duration_minutes']:.1f} хв")
-else:
-    st.info("Немає даних про тривоги починаючи з 2022 року.")
-
-st.markdown("---")
-
-# 2. Топи та кругові діаграми
-daily_alerts = alerts.groupby('date').agg(
-    alert_count=('start', 'count'),
+# 3. Аналіз рекордних днів та кругова діаграма
+st.header("2. Розподіл тривожних днів")
+daily_alerts = df_alerts.groupby('date').agg(
+    alert_count=('uid', 'count'),
     total_duration=('duration_minutes', 'sum')
 ).reset_index()
 
-top_count_days = daily_alerts.nlargest(10, 'alert_count')
-top_duration_days = daily_alerts.nlargest(10, 'total_duration')
+total_alert_days = len(daily_alerts)
+top_percent_count = max(int(total_alert_days * 0.05), 10) # Беремо Топ 5% днів
 
-st.subheader("🍩 Відсоткове співвідношення екстремальних днів (Топ-10)")
+set_longest = set(daily_alerts.nlargest(top_percent_count, 'total_duration')['date'])
+set_most = set(daily_alerts.nlargest(top_percent_count, 'alert_count')['date'])
+days_both = set_longest.intersection(set_most)
+
+sizes = [
+    len(set_longest - days_both),
+    len(set_most - days_both),
+    len(days_both),
+    total_alert_days - len(set_longest.union(set_most))
+]
+labels = ['Найдовші тривоги (Топ 5%)', 'Найбільше тривог (Топ 5%)', 'Обидві категорії', 'Інші дні']
+
+fig_pie = px.pie(values=sizes, names=labels, hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
+st.plotly_chart(fig_pie)
+
+# 4. Рівень забруднень (До та після вторгнення)
+st.header("3. Якість повітря: до та після повномасштабного вторгнення")
+# Для порівняння беремо тиждень до (17-23 лютого) і тиждень після (24 лютого - 2 березня)
+start_pre, end_pre = pd.to_datetime('2022-02-17').date(), pd.to_datetime('2022-02-23').date()
+start_post, end_post = pd.to_datetime('2022-02-24').date(), pd.to_datetime('2022-03-02').date()
+
+aqi_pre = daily_aqi[(daily_aqi['date'] >= start_pre) & (daily_aqi['date'] <= end_pre)]['value'].mean()
+aqi_post = daily_aqi[(daily_aqi['date'] >= start_post) & (daily_aqi['date'] <= end_post)]['value'].mean()
+
 col1, col2 = st.columns(2)
+col1.metric("Середній AQI (17–23 Лют 2022)", f"{aqi_pre:.1f}")
+col2.metric("Середній AQI (24 Лют–2 Бер 2022)", f"{aqi_post:.1f}", delta=f"{aqi_post - aqi_pre:.1f}", delta_color="inverse")
 
-total_days = len(daily_alerts)
-if total_days > 10:
-    with col1:
-        fig1 = px.pie(
-            values=[10, total_days - 10], 
-            names=['Топ-10 днів за кількістю', 'Інші дні'],
-            hole=0.4, color_discrete_sequence=['#ff9900', '#3366cc']
-        )
-        st.plotly_chart(fig1, use_container_width=True)
-    with col2:
-        fig2 = px.pie(
-            values=[10, total_days - 10], 
-            names=['Топ-10 днів за тривалістю', 'Інші дні'],
-            hole=0.4, color_discrete_sequence=['#00cc96', '#3366cc']
-        )
-        st.plotly_chart(fig2, use_container_width=True)
-else:
-    st.info("Недостатньо днів для побудови діаграми відсотка (менше 10).")
+# 5. Співставлення: Тривоги + Якість повітря
+st.header("4. Співставлення забруднення повітря у рекордні дні")
+top_n = st.slider("Кількість днів для виведення в таблицю", 5, 20, 10)
+top_count = daily_alerts.nlargest(top_n, 'alert_count')
+top_duration = daily_alerts.nlargest(top_n, 'total_duration')
 
-st.markdown("---")
+merged_count = pd.merge(top_count, daily_aqi, on='date', how='left').rename(
+    columns={'date': 'Дата', 'alert_count': 'К-ть тривог', 'total_duration': 'Тривалість (хв)', 'value': 'Середній AQI'}
+).fillna('Немає даних')
 
-# 3. Екологія до та після (лютий-березень 2022)
-st.subheader("🌫️ Забруднення до і після 24.02.2022")
-pre_invasion = eco[(eco['date_time'] >= '2022-02-17') & (eco['date_time'] < '2022-02-24')]
-post_invasion = eco[(eco['date_time'] >= '2022-03-01') & (eco['date_time'] < '2022-03-08')]
+merged_duration = pd.merge(top_duration, daily_aqi, on='date', how='left').rename(
+    columns={'date': 'Дата', 'total_duration': 'Тривалість (хв)', 'alert_count': 'К-ть тривог', 'value': 'Середній AQI'}
+).fillna('Немає даних')
 
-if not pre_invasion.empty and not post_invasion.empty:
-    pre_avg = pre_invasion[COL_ECO_VALUE].mean()
-    post_avg = post_invasion[COL_ECO_VALUE].mean()
-    
-    ec1, ec2, ec3 = st.columns(3)
-    ec1.metric("Тиждень ДО (17-23 лют)", f"{pre_avg:.2f}")
-    ec2.metric("Тиждень ПІСЛЯ (01-07 бер)", f"{post_avg:.2f}", delta=f"{post_avg - pre_avg:.2f}", delta_color="inverse")
-else:
-    st.warning("Не знайдено даних про забруднення за лютий-березень 2022 року.")
+col_t1, col_t2 = st.columns(2)
+with col_t1:
+    st.subheader("Дні з найбільшою кількістю тривог")
+    st.dataframe(merged_count, hide_index=True)
 
-st.markdown("---")
-
-# 4. Співставлення
-st.subheader("🔍 Зв'язок: Тривоги та рівень забруднення")
-daily_eco = eco.groupby('date')[COL_ECO_VALUE].mean().reset_index()
-
-merged_count = pd.merge(top_count_days, daily_eco, on='date', how='left').rename(
-    columns={'date': 'Дата', 'alert_count': 'К-сть тривог', 'total_duration': 'Тривалість (хв)', COL_ECO_VALUE: 'Середнє забруднення'}
-)
-merged_duration = pd.merge(top_duration_days, daily_eco, on='date', how='left').rename(
-    columns={'date': 'Дата', 'alert_count': 'К-сть тривог', 'total_duration': 'Тривалість (хв)', COL_ECO_VALUE: 'Середнє забруднення'}
-)
-
-tab1, tab2 = st.tabs(["Дні з найчастішими тривогами", "Дні з найдовшими тривогами"])
-with tab1:
-    st.dataframe(merged_count, use_container_width=True)
-with tab2:
-    st.dataframe(merged_duration, use_container_width=True)
+with col_t2:
+    st.subheader("Дні з найдовшими тривогами")
+    st.dataframe(merged_duration, hide_index=True)
