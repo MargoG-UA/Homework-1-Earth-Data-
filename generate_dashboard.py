@@ -1115,3 +1115,16 @@ with open("index.html", "w", encoding="utf-8") as f:
 print(
     "File index.html successfully generated with external navigation buttons and #RUSSIAISATERRORISTSTATE!"
 )
+
+
+import streamlit.components.v1 as components
+
+# Налаштування широкого екрану Streamlit (бажано додати на початку або тут)
+import streamlit as st
+
+st.set_page_config(
+    page_title="Air Raid Alerts & AQI Kyiv", page_icon="🇺🇦", layout="wide"
+)
+
+# Відображення вашого згенерованого HTML у Streamlit
+components.html(html_content, height=1200, scrolling=True)
