@@ -1,44 +1,108 @@
-<!DOCTYPE html>
+import pandas as pd
+import json
+
+# 1. Завантаження та обробка повітряних тривог з airAlert.json
+with open('airAlert.json', 'r', encoding='utf-8') as f:
+    alerts = json.load(f)
+
+df_alerts = pd.DataFrame(alerts)
+df_alerts['dateTimeStart'] = pd.to_datetime(df_alerts['dateTimeStart'])
+df_alerts['dateTimeEnd'] = pd.to_datetime(df_alerts['dateTimeEnd'])
+df_alerts = df_alerts.dropna(subset=['dateTimeStart', 'dateTimeEnd'])
+df_alerts['duration_minutes'] = (df_alerts['dateTimeEnd'] - df_alerts['dateTimeStart']).dt.total_seconds() / 60
+df_alerts['year'] = df_alerts['dateTimeStart'].dt.year
+df_alerts['date'] = df_alerts['dateTimeStart'].dt.date
+
+# Середня тривалість тривоги за кожен рік (з 2022)
+avg_duration_yr = df_alerts[df_alerts['year'] >= 2022].groupby('year')['duration_minutes'].mean().round(1)
+
+# Групування за днями (кількість тривог та сумарна тривалість за день)
+daily_alerts = df_alerts.groupby('date').agg(
+    alert_count=('uid', 'count'),
+    total_duration=('duration_minutes', 'sum')
+).reset_index()
+
+total_alert_days = len(daily_alerts)
+top_n = max(int(total_alert_days * 0.05), 10)
+
+set_longest = set(daily_alerts.nlargest(top_n, 'total_duration')['date'])
+set_most = set(daily_alerts.nlargest(top_n, 'alert_count')['date'])
+days_both = set_longest.intersection(set_most)
+days_only_longest = set_longest - days_both
+days_only_most = set_most - days_both
+days_other = total_alert_days - len(set_longest.union(set_most))
+
+# Розрахунок відсотків для кругової діаграми
+pct_longest = round(len(days_only_longest) / total_alert_days * 100, 1)
+pct_most = round(len(days_only_most) / total_alert_days * 100, 1)
+pct_both = round(len(days_both) / total_alert_days * 100, 1)
+pct_other = round(len(days_other) / total_alert_days * 100, 1)
+
+# 2. Обробка AQI з saveecobot_city_2_hourly.csv
+df_eco = pd.read_csv('saveecobot_city_2_hourly.csv', low_memory=False)
+df_eco['logged_at'] = pd.to_datetime(df_eco['logged_at'])
+df_eco['date'] = df_eco['logged_at'].dt.date
+df_aqi = df_eco[df_eco['phenomenon'] == 'aqi']
+daily_aqi = df_aqi.groupby('date')['value'].mean().reset_index()
+
+# Періоди до та після вторгнення
+start_pre, end_pre = pd.to_datetime('2022-02-17').date(), pd.to_datetime('2022-02-23').date()
+start_post, end_post = pd.to_datetime('2022-02-24').date(), pd.to_datetime('2022-03-02').date()
+aqi_pre = daily_aqi[(daily_aqi['date'] >= start_pre) & (daily_aqi['date'] <= end_pre)]['value'].mean()
+aqi_post = daily_aqi[(daily_aqi['date'] >= start_post) & (daily_aqi['date'] <= end_post)]['value'].mean()
+
+# Об'єднання топ-днів з даними AQI
+merged_count = pd.merge(daily_alerts.nlargest(10, 'alert_count'), daily_aqi, on='date', how='left').fillna(-1)
+merged_duration = pd.merge(daily_alerts.nlargest(10, 'total_duration'), daily_aqi, on='date', how='left').fillna(-1)
+
+def format_aqi(val): return f"{val:.1f}" if val != -1 else "Немає даних"
+
+merged_count_rows = "".join([f"<tr><td>{row['date']}</td><td>{row['alert_count']}</td><td>{row['total_duration']:.0f}</td><td>{format_aqi(row['value'])}</td></tr>" for _, row in merged_count.iterrows()])
+merged_duration_rows = "".join([f"<tr><td>{row['date']}</td><td>{row['total_duration']:.0f}</td><td>{row['alert_count']}</td><td>{format_aqi(row['value'])}</td></tr>" for _, row in merged_duration.iterrows()])
+
+# 3. Генерація HTML
+html = f"""<!DOCTYPE html>
 <html lang="uk">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Дашборд: Повітряні тривоги та AQI</title>
+    <title>Аналітика повітряних тривог та AQI</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
-        :root { --bg-color: #0f111a; --panel-bg: #1e2130; --text-main: #ffffff; --text-muted: #8b92a5; }
-        body { margin: 0; padding: 30px; background-color: var(--bg-color); color: var(--text-main); font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
-        .header { margin-bottom: 30px; }
-        .header h1 { margin: 0; font-size: 28px; font-weight: 600; color: #ffffff; }
-        .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin-bottom: 20px; }
-        .card { background: var(--panel-bg); border-radius: 12px; padding: 24px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.05); }
-        .card h3 { margin: 0 0 15px; font-size: 14px; text-transform: uppercase; color: #8b92a5; }
-        .card .value { font-size: 28px; font-weight: bold; color: #ffffff; }
-        .grid-2 { grid-template-columns: repeat(2, 1fr); }
-        .grid-3 { grid-template-columns: repeat(3, 1fr); }
-        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-        th, td { text-align: left; padding: 12px; border-bottom: 1px solid rgba(255,255,255,0.05); color: #ffffff; }
-        th { text-transform: uppercase; font-size: 12px; font-weight: bold; background-color: #2a2e42; color: #8b92a5; }
-        .chart-container { position: relative; height: 320px; width: 100%; }
+        :root {{ --bg-color: #0f111a; --panel-bg: #1e2130; --text-main: #ffffff; --text-muted: #8b92a5; }}
+        body {{ margin: 0; padding: 30px; background-color: var(--bg-color); color: var(--text-main); font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }}
+        .header {{ margin-bottom: 30px; }}
+        .header h1 {{ margin: 0; font-size: 28px; font-weight: 600; color: #ffffff; }}
+        .grid {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin-bottom: 20px; }}
+        .card {{ background: var(--panel-bg); border-radius: 12px; padding: 24px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.05); }}
+        .card h3 {{ margin: 0 0 15px; font-size: 14px; text-transform: uppercase; color: #8b92a5; }}
+        .card .value {{ font-size: 28px; font-weight: bold; color: #ffffff; }}
+        .grid-2 {{ grid-template-columns: repeat(2, 1fr); }}
+        .grid-3 {{ grid-template-columns: repeat(3, 1fr); }}
+        table {{ width: 100%; border-collapse: collapse; margin-top: 10px; }}
+        th, td {{ text-align: left; padding: 12px; border-bottom: 1px solid rgba(255,255,255,0.05); color: #ffffff; }}
+        th {{ text-transform: uppercase; font-size: 12px; font-weight: bold; background-color: #2a2e42; color: #8b92a5; }}
+        .chart-container {{ position: relative; height: 320px; width: 100%; }}
+        .table-container {{ max-height: 350px; overflow-y: auto; }}
     </style>
 </head>
 <body>
     <div class="header">
-        <h1>Аналітика повітряних тривог та якості повітря (Київ)</h1>
+        <h1>Дашборд: Повітряні тривоги та якість повітря (AQI)</h1>
     </div>
 
     <div class="grid grid-3">
         <div class="card">
             <h3>Середній AQI до вторгнення (17-23 лют 2022)</h3>
-            <div class="value" style="color: #10b981;">35.1</div>
+            <div class="value" style="color: #10b981;">{aqi_pre:.1f}</div>
         </div>
         <div class="card">
             <h3>Середній AQI після вторгнення (24 лют - 2 бер 2022)</h3>
-            <div class="value" style="color: #ef4444;">29.4</div>
+            <div class="value" style="color: #ef4444;">{aqi_post:.1f}</div>
         </div>
         <div class="card">
             <h3>Різниця AQI</h3>
-            <div class="value" style="color: #f59e0b;">-5.7</div>
+            <div class="value" style="color: #f59e0b;">+{aqi_post - aqi_pre:.1f}</div>
         </div>
     </div>
 
@@ -55,71 +119,82 @@
 
     <div class="grid grid-2">
         <div class="card">
-            <h3>Дні з найбільшою к-тю тривог та AQI</h3>
-            <table>
-                <tr><th>Дата</th><th>К-ть</th><th>Хв</th><th>AQI</th></tr>
-                <tr><td>2022-03-14</td><td>13</td><td>310</td><td>21.5</td></tr>
-                <tr><td>2022-03-07</td><td>12</td><td>290</td><td>25.0</td></tr>
-                <tr><td>2022-03-16</td><td>11</td><td>275</td><td>19.8</td></tr>
-            </table>
+            <h3>Дні з найбільшою кількістю тривог</h3>
+            <div class="table-container">
+                <table>
+                    <tr><th>Дата</th><th>К-ть</th><th>Хв</th><th>AQI</th></tr>
+                    {merged_count_rows}
+                </table>
+            </div>
         </div>
         <div class="card">
-            <h3>Дні з найдовшими тривогами та AQI</h3>
-            <table>
-                <tr><th>Дата</th><th>Хв</th><th>К-ть</th><th>AQI</th></tr>
-                <tr><td>2022-05-22</td><td>840</td><td>3</td><td>45.2</td></tr>
-                <tr><td>2022-04-25</td><td>810</td><td>4</td><td>38.6</td></tr>
-                <tr><td>2022-06-12</td><td>795</td><td>2</td><td>51.1</td></tr>
-            </table>
+            <h3>Дні з найдовшими тривогами</h3>
+            <div class="table-container">
+                <table>
+                    <tr><th>Дата</th><th>Хв</th><th>К-ть</th><th>AQI</th></tr>
+                    {merged_duration_rows}
+                </table>
+            </div>
         </div>
     </div>
 
 <script>
     Chart.defaults.color = '#ffffff';
     
-    // Стовпчиковий графік
-    new Chart(document.getElementById('barChart'), {
+    // Стовпчиковий графік тривалості за роки
+    new Chart(document.getElementById('barChart'), {{
         type: 'bar',
-        data: {
-            labels: ['2022', '2023', '2024', '2025', '2026'],
-            datasets: [{
+        data: {{
+            labels: {list(avg_duration_yr.index)},
+            datasets: [{{
                 label: 'Середня тривалість (хв)',
-                data: [63.0, 80.1, 64.8, 86.9, 55.5],
+                data: {list(avg_duration_yr.values)},
                 backgroundColor: '#3b82f6',
                 borderRadius: 6
-            }]
-        },
-        options: {
+            }}]
+        }},
+        options: {{
             responsive: true,
             maintainAspectRatio: false,
-            plugins: { legend: { display: false } },
-            scales: {
-                y: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#8b92a5' } },
-                x: { grid: { display: false }, ticks: { color: '#8b92a5' } }
-            }
-        }
-    });
+            plugins: {{ legend: {{ display: false }} }},
+            scales: {{
+                y: {{ grid: {{ color: 'rgba(255,255,255,0.05)' }}, ticks: {{ color: '#8b92a5' }} }},
+                x: {{ grid: {{ display: false }}, ticks: {{ color: '#8b92a5' }} }}
+            }}
+        }}
+    }});
 
-    // Кругова діаграма
-    new Chart(document.getElementById('pieChart'), {
+    // Кругова діаграма у відсотках
+    new Chart(document.getElementById('pieChart'), {{
         type: 'doughnut',
-        data: {
-            labels: ['Найдовші тривоги (4.2%)', 'Найбільше тривог (4.2%)', 'Обидві категорії (0.8%)', 'Інші дні (90.8%)'],
-            datasets: [{
-                data: [4.2, 4.2, 0.8, 90.8],
+        data: {{
+            labels: [
+                'Найдовші тривоги ({pct_longest}%)', 
+                'Найбільше тривог ({pct_most}%)', 
+                'Обидві категорії ({pct_both}%)', 
+                'Інші дні ({pct_other}%)'
+            ],
+            datasets: [{{
+                data: [{len(days_only_longest)}, {len(days_only_most)}, {len(days_both)}, {days_other}],
                 backgroundColor: ['#ef4444', '#f59e0b', '#10b981', '#374151'],
                 borderWidth: 0
-            }]
-        },
-        options: {
+            }}]
+        }},
+        options: {{
             responsive: true,
             maintainAspectRatio: false,
-            plugins: {
-                legend: { position: 'bottom', labels: { color: '#8b92a5', padding: 15 } }
-            },
+            plugins: {{
+                legend: {{ position: 'bottom', labels: {{ color: '#8b92a5', padding: 15 }} }}
+            }},
             cutout: '65%'
-        }
-    });
+        }}
+    }});
 </script>
 </body>
 </html>
+"""
+
+with open('index.html', 'w', encoding='utf-8') as f:
+    f.write(html)
+
+print("Скрипт успішно оновлено! index.html з реальними даними створено.")
