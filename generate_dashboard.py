@@ -1,9 +1,18 @@
 import json
 import pandas as pd
+import streamlit as st
+import streamlit.components.v1 as components
+
+# Налаштування сторінки Streamlit (має бути першою командою Streamlit)
+st.set_page_config(
+    page_title="Air Raid Alerts & Air Quality Analytics (AQI) in Kyiv",
+    page_icon="🇺🇦",
+    layout="wide",
+)
 
 # 1. Завантаження даних повітряних тривог (з обмеженням по 15.09.2026)
 with open("airAlert.json", "r", encoding="utf-8") as f:
-    alerts = json.load(f)
+  alerts = json.load(f)
 
 df_alerts = pd.DataFrame(alerts)
 df_alerts["dateTimeStart"] = pd.to_datetime(df_alerts["dateTimeStart"])
@@ -11,8 +20,8 @@ df_alerts["dateTimeEnd"] = pd.to_datetime(df_alerts["dateTimeEnd"])
 df_alerts = df_alerts[df_alerts["dateTimeStart"] <= "2026-09-15 23:59:59"]
 
 df_alerts["duration_min"] = (
-                                    df_alerts["dateTimeEnd"] - df_alerts["dateTimeStart"]
-                            ).dt.total_seconds() / 60
+    df_alerts["dateTimeEnd"] - df_alerts["dateTimeStart"]
+).dt.total_seconds() / 60
 df_alerts["date"] = df_alerts["dateTimeStart"].dt.date
 df_alerts["year"] = df_alerts["dateTimeStart"].dt.year
 
@@ -47,9 +56,9 @@ top_count_days = count_filtered.sort_values(
     by=["count", "total_min"], ascending=False
 )
 if len(top_count_days) == 0:
-    top_count_days = daily_counts.sort_values(
-        by=["count", "total_min"], ascending=False
-    ).head(10)
+  top_count_days = daily_counts.sort_values(
+      by=["count", "total_min"], ascending=False
+  ).head(10)
 top_count_days = pd.merge(
     top_count_days, df_aqi_daily_agg, on="date", how="left"
 )
@@ -59,9 +68,9 @@ top_duration_days = long_days_filtered.sort_values(
     by=["total_min", "count"], ascending=False
 )
 if len(top_duration_days) == 0:
-    top_duration_days = daily_counts.sort_values(
-        by=["total_min", "count"], ascending=False
-    ).head(10)
+  top_duration_days = daily_counts.sort_values(
+      by=["total_min", "count"], ascending=False
+  ).head(10)
 top_duration_days = pd.merge(
     top_duration_days, df_aqi_daily_agg, on="date", how="left"
 )
@@ -79,7 +88,7 @@ df_no_alerts = pd.merge(df_no_alerts, df_aqi_daily_agg, on="date", how="left")
 df_no_alerts = df_no_alerts.sort_values(by="date", ascending=False)
 avg_aqi_no_alerts = df_no_alerts["aqi"].mean()
 if pd.isna(avg_aqi_no_alerts):
-    avg_aqi_no_alerts = 0.0
+  avg_aqi_no_alerts = 0.0
 
 subsequent_dates = [
     pd.to_datetime(d) + pd.Timedelta(days=1) for d in no_alert_dates
@@ -112,7 +121,7 @@ top_pollution_days = merged_daily_all.dropna(subset=["aqi"]).sort_values(
 
 merged_full_df = merged_daily_all[
     merged_daily_all["date"] <= max_date
-    ].copy()
+].copy()
 merged_full_df["date_str"] = merged_full_df["date"].astype(str)
 merged_full_df["aqi"] = merged_full_df["aqi"].fillna("N/A")
 daily_data_json = merged_full_df[
@@ -124,40 +133,40 @@ aqi_before = df_save[
     (df_save["phenomenon"] == "aqi")
     & (df_save["logged_at"] >= "2022-02-17")
     & (df_save["logged_at"] <= "2022-02-23")
-    ]["value"].mean()
+]["value"].mean()
 
 aqi_after = df_save[
     (df_save["phenomenon"] == "aqi")
     & (df_save["logged_at"] >= "2022-02-24")
     & (df_save["logged_at"] <= "2022-03-02")
-    ]["value"].mean()
+]["value"].mean()
 
 if pd.isna(aqi_before):
-    aqi_before = 35.5
+  aqi_before = 35.5
 if pd.isna(aqi_after):
-    aqi_after = 38.6
+  aqi_after = 38.6
 
 aqi_diff = aqi_after - aqi_before
 aqi_diff_pct = (aqi_diff / aqi_before) * 100
 
 
 def make_rows_json(df):
-    rows_data = []
-    for _, r in df.iterrows():
-        dt = str(r["date"])
-        cnt = int(r["count"]) if "count" in r and pd.notnull(r["count"]) else 0
-        mins = (
-            int(round(r["total_min"]))
-            if "total_min" in r and pd.notnull(r["total_min"])
-            else 0
-        )
-        aqi_val = (
-            round(r["aqi"], 1)
-            if ("aqi" in r and pd.notnull(r["aqi"]) and r["aqi"] != "N/A")
-            else -1
-        )
-        rows_data.append({"date": dt, "count": cnt, "mins": mins, "aqi": aqi_val})
-    return rows_data
+  rows_data = []
+  for _, r in df.iterrows():
+    dt = str(r["date"])
+    cnt = int(r["count"]) if "count" in r and pd.notnull(r["count"]) else 0
+    mins = (
+        int(round(r["total_min"]))
+        if "total_min" in r and pd.notnull(r["total_min"])
+        else 0
+    )
+    aqi_val = (
+        round(r["aqi"], 1)
+        if ("aqi" in r and pd.notnull(r["aqi"]) and r["aqi"] != "N/A")
+        else -1
+    )
+    rows_data.append({"date": dt, "count": cnt, "mins": mins, "aqi": aqi_val})
+  return rows_data
 
 
 count_table_data = make_rows_json(top_count_days)
@@ -180,11 +189,11 @@ days_count_count = len(only_count_set)
 days_both_count = len(intersection_set)
 days_no_alert_count = len(no_alert_set)
 days_other_count = (
-        total_days_count
-        - days_dur_count
-        - days_count_count
-        - days_both_count
-        - days_no_alert_count
+    total_days_count
+    - days_dur_count
+    - days_count_count
+    - days_both_count
+    - days_no_alert_count
 )
 
 pct_dur = round((days_dur_count / total_days_count) * 100, 1)
@@ -1109,22 +1118,5 @@ html_content = f"""<!DOCTYPE html>
 </html>
 """
 
-with open("index.html", "w", encoding="utf-8") as f:
-    f.write(html_content)
-
-print(
-    "File index.html successfully generated with external navigation buttons and #RUSSIAISATERRORISTSTATE!"
-)
-
-
-import streamlit.components.v1 as components
-
-# Налаштування широкого екрану Streamlit (бажано додати на початку або тут)
-import streamlit as st
-
-st.set_page_config(
-    page_title="Air Raid Alerts & AQI Kyiv", page_icon="🇺🇦", layout="wide"
-)
-
-# Відображення вашого згенерованого HTML у Streamlit
+# Виведення сайту всередині Streamlit за допомогою components.html
 components.html(html_content, height=1200, scrolling=True)
