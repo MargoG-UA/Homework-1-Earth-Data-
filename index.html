@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Аналітика повітряних тривог та AQI</title>
+    <title>Дашборд: Тривоги та Забруднення</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         :root { --bg-color: #0f111a; --panel-bg: #1e2130; --text-main: #ffffff; --text-muted: #8b92a5; }
@@ -34,11 +34,11 @@
         </div>
         <div class="card">
             <h3>Середній AQI після вторгнення (24 лют - 2 бер 2022)</h3>
-            <div class="value" style="color: #ef4444;">39.4</div>
+            <div class="value" style="color: #ef4444;">29.4</div>
         </div>
         <div class="card">
             <h3>Різниця AQI</h3>
-            <div class="value" style="color: #f59e0b;">+4.2</div>
+            <div class="value" style="color: #f59e0b;">-5.7</div>
         </div>
     </div>
 
@@ -53,34 +53,17 @@
         </div>
     </div>
 
-    <div class="grid grid-2">
-        <div class="card">
-            <h3>Дні з найбільшою кількістю тривог та AQI</h3>
-            <table>
-                <tr><th>Дата</th><th>К-ть тривог</th><th>Тривалість (хв)</th><th>AQI</th></tr>
-                <tr><td>2026-08-27</td><td>13</td><td>920</td><td>30.8</td></tr><tr><td>2026-08-28</td><td>12</td><td>600</td><td>21.2</td></tr><tr><td>2026-08-31</td><td>12</td><td>464</td><td>37.6</td></tr><tr><td>2026-08-30</td><td>11</td><td>536</td><td>35.3</td></tr><tr><td>2026-09-02</td><td>11</td><td>517</td><td>24.2</td></tr><tr><td>2022-03-09</td><td>10</td><td>460</td><td>30.4</td></tr><tr><td>2026-08-18</td><td>10</td><td>420</td><td>33.1</td></tr><tr><td>2026-08-29</td><td>10</td><td>648</td><td>36.5</td></tr><tr><td>2022-03-01</td><td>9</td><td>308</td><td>28.0</td></tr><tr><td>2022-03-11</td><td>9</td><td>717</td><td>17.1</td></tr>
-            </table>
-        </div>
-        <div class="card">
-            <h3>Дні з найдовшими тривогами та AQI</h3>
-            <table>
-                <tr><th>Дата</th><th>Тривалість (хв)</th><th>К-ть тривог</th><th>AQI</th></tr>
-                <tr><td>2024-11-07</td><td>1102</td><td>3</td><td>74.2</td></tr><tr><td>2026-09-08</td><td>973</td><td>4</td><td>18.5</td></tr><tr><td>2026-08-27</td><td>920</td><td>13</td><td>30.8</td></tr><tr><td>2025-12-27</td><td>831</td><td>4</td><td>18.7</td></tr><tr><td>2024-09-04</td><td>812</td><td>2</td><td>42.4</td></tr><tr><td>2026-09-03</td><td>806</td><td>7</td><td>24.3</td></tr><tr><td>2022-03-16</td><td>746</td><td>8</td><td>18.9</td></tr><tr><td>2025-11-28</td><td>719</td><td>4</td><td>47.2</td></tr><tr><td>2022-03-11</td><td>717</td><td>9</td><td>17.1</td></tr><tr><td>2024-11-27</td><td>701</td><td>5</td><td>78.1</td></tr>
-            </table>
-        </div>
-    </div>
-
 <script>
     Chart.defaults.color = '#ffffff';
-
-    // Стовпчиковий графік тривалості за роки
+    
+    // Стовпчиковий графік тривалості за роки (з 2022)
     new Chart(document.getElementById('barChart'), {
         type: 'bar',
         data: {
-            labels: [2022, 2023, 2024, 2025, 2026],
+            labels: ['2022', '2023', '2024', '2025', '2026'],
             datasets: [{
                 label: 'Середня тривалість (хв)',
-                data: [np.float64(63.0), np.float64(80.1), np.float64(64.8), np.float64(86.9), np.float64(55.5)],
+                data: [63.0, 80.1, 64.8, 86.9, 55.5],
                 backgroundColor: '#3b82f6',
                 borderRadius: 6
             }]
@@ -102,7 +85,7 @@
         data: {
             labels: ['Найдовші тривоги', 'Найбільше тривог', 'Обидві категорії', 'Інші дні'],
             datasets: [{
-                data: [38, 38, 19, 1055],
+                data: [4.2, 4.2, 0.8, 90.8],
                 backgroundColor: ['#ef4444', '#f59e0b', '#10b981', '#374151'],
                 borderWidth: 0
             }]
