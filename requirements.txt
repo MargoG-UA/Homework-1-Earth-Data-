@@ -1,6 +1,3 @@
 streamlit
 pandas
-requests
-xarray
-h5netcdf
-earthaccess
+plotly.express
